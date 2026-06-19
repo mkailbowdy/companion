@@ -1,0 +1,57 @@
+package main
+
+import (
+	"math"
+	"testing"
+	"time"
+)
+
+func TestTransitionProgress(t *testing.T) {
+	tests := []struct {
+		elapsed time.Duration
+		want    float64
+	}{
+		{-time.Second, 0},
+		{0, 0},
+		{transitionDuration / 2, 0.5},
+		{transitionDuration, 1},
+		{time.Second, 1},
+	}
+	for _, test := range tests {
+		if got := transitionProgress(test.elapsed); got != test.want {
+			t.Errorf("transitionProgress(%v) = %v, want %v", test.elapsed, got, test.want)
+		}
+	}
+}
+
+func TestEveryExpressionProducesFinitePose(t *testing.T) {
+	for _, emotion := range Emotions {
+		for _, activity := range Activities {
+			pose := poseFor(ExpressionCommand{Emotion: emotion, Activity: activity})
+			values := []float64{
+				pose.eyeOpen, pose.eyeScale, pose.browTilt, pose.mouthWidth,
+				pose.mouthOpen, pose.mouthCurve, pose.gazeX, pose.gazeY,
+			}
+			for _, value := range values {
+				if math.IsNaN(value) || math.IsInf(value, 0) {
+					t.Fatalf("%s/%s produced invalid pose: %+v", emotion, activity, pose)
+				}
+			}
+		}
+	}
+}
+
+func TestSetCommandStartsFromCurrentInterpolatedPose(t *testing.T) {
+	now := time.Unix(100, 0)
+	clock := func() time.Time { return now }
+	game := NewGame(NewExpressionInbox(), clock, 1)
+	game.setCommand(ExpressionCommand{Emotion: EmotionHappy, Activity: ActivityNeutral}, now)
+
+	now = now.Add(transitionDuration / 2)
+	expected := interpolatePose(poseFor(ExpressionCommand{Emotion: EmotionNeutral, Activity: ActivityNeutral}), poseFor(ExpressionCommand{Emotion: EmotionHappy, Activity: ActivityNeutral}), 0.5)
+	game.setCommand(ExpressionCommand{Emotion: EmotionSad, Activity: ActivityNeutral}, now)
+
+	if game.from != expected {
+		t.Fatalf("transition started from %+v, want %+v", game.from, expected)
+	}
+}
