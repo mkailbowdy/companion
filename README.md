@@ -3,18 +3,24 @@
 An animated, procedural BMO face for a 1280×720 Raspberry Pi display, built
 with Ebitengine.
 
+The code is arranged in a `Let's Go`-style tree:
+
+- `cmd/bmo` contains the executable entrypoint.
+- `internal/expression` handles JSON input and the latest-wins inbox.
+- `internal/game` owns the Ebitengine scene and animation logic.
+
 ## Run
 
 The normal build starts fullscreen and hides the pointer:
 
 ```sh
-go run .
+go run ./cmd/bmo
 ```
 
 For desktop development:
 
 ```sh
-BMO_WINDOWED=1 go run .
+BMO_WINDOWED=1 go run ./cmd/bmo
 ```
 
 Use Left/Right to cycle emotions, Up/Down to cycle activities, and Space to

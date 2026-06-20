@@ -1,9 +1,11 @@
-package main
+package game
 
 import (
 	"math"
 	"testing"
 	"time"
+
+	"bmo.pushiro.com/internal/expression"
 )
 
 func TestTransitionProgress(t *testing.T) {
@@ -25,9 +27,9 @@ func TestTransitionProgress(t *testing.T) {
 }
 
 func TestEveryExpressionProducesFinitePose(t *testing.T) {
-	for _, emotion := range Emotions {
-		for _, activity := range Activities {
-			pose := poseFor(ExpressionCommand{Emotion: emotion, Activity: activity})
+	for _, emotion := range expression.Emotions {
+		for _, activity := range expression.Activities {
+			pose := poseFor(expression.ExpressionCommand{Emotion: emotion, Activity: activity})
 			values := []float64{
 				pose.eyeOpen, pose.eyeScale, pose.browTilt, pose.mouthWidth,
 				pose.mouthOpen, pose.mouthCurve, pose.gazeX, pose.gazeY,
@@ -44,12 +46,16 @@ func TestEveryExpressionProducesFinitePose(t *testing.T) {
 func TestSetCommandStartsFromCurrentInterpolatedPose(t *testing.T) {
 	now := time.Unix(100, 0)
 	clock := func() time.Time { return now }
-	game := NewGame(NewExpressionInbox(), clock, 1)
-	game.setCommand(ExpressionCommand{Emotion: EmotionHappy, Activity: ActivityNeutral}, now)
+	game := NewGame(expression.NewExpressionInbox(), clock, 1)
+	game.setCommand(expression.ExpressionCommand{Emotion: expression.EmotionHappy, Activity: expression.ActivityNeutral}, now)
 
 	now = now.Add(transitionDuration / 2)
-	expected := interpolatePose(poseFor(ExpressionCommand{Emotion: EmotionNeutral, Activity: ActivityNeutral}), poseFor(ExpressionCommand{Emotion: EmotionHappy, Activity: ActivityNeutral}), 0.5)
-	game.setCommand(ExpressionCommand{Emotion: EmotionSad, Activity: ActivityNeutral}, now)
+	expected := interpolatePose(
+		poseFor(expression.ExpressionCommand{Emotion: expression.EmotionNeutral, Activity: expression.ActivityNeutral}),
+		poseFor(expression.ExpressionCommand{Emotion: expression.EmotionHappy, Activity: expression.ActivityNeutral}),
+		0.5,
+	)
+	game.setCommand(expression.ExpressionCommand{Emotion: expression.EmotionSad, Activity: expression.ActivityNeutral}, now)
 
 	if game.from != expected {
 		t.Fatalf("transition started from %+v, want %+v", game.from, expected)

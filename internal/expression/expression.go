@@ -1,4 +1,4 @@
-package main
+package expression
 
 import (
 	"encoding/json"
@@ -74,6 +74,18 @@ func DecodeExpression(data []byte) (ExpressionCommand, error) {
 	return cmd, errors.Join(warnings...)
 }
 
+func NormalizeCommand(cmd ExpressionCommand) ExpressionCommand {
+	cmd.Emotion = Emotion(strings.ToLower(strings.TrimSpace(string(cmd.Emotion))))
+	cmd.Activity = Activity(strings.ToLower(strings.TrimSpace(string(cmd.Activity))))
+	if !validEmotion(cmd.Emotion) {
+		cmd.Emotion = EmotionNeutral
+	}
+	if !validActivity(cmd.Activity) {
+		cmd.Activity = ActivityNeutral
+	}
+	return cmd
+}
+
 func validEmotion(value Emotion) bool {
 	for _, candidate := range Emotions {
 		if value == candidate {
@@ -100,14 +112,16 @@ type ExpressionInbox struct {
 }
 
 func NewExpressionInbox() *ExpressionInbox {
-	return &ExpressionInbox{commands: make(chan ExpressionCommand, 1)}
+	return &ExpressionInbox{
+		commands: make(chan ExpressionCommand, 1),
+	}
 }
 
 func (i *ExpressionInbox) Submit(cmd ExpressionCommand) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	cmd = normalizeCommand(cmd)
+	cmd = NormalizeCommand(cmd)
 	select {
 	case i.commands <- cmd:
 		return
@@ -137,16 +151,4 @@ func (i *ExpressionInbox) Latest() (ExpressionCommand, bool) {
 			return latest, found
 		}
 	}
-}
-
-func normalizeCommand(cmd ExpressionCommand) ExpressionCommand {
-	cmd.Emotion = Emotion(strings.ToLower(strings.TrimSpace(string(cmd.Emotion))))
-	cmd.Activity = Activity(strings.ToLower(strings.TrimSpace(string(cmd.Activity))))
-	if !validEmotion(cmd.Emotion) {
-		cmd.Emotion = EmotionNeutral
-	}
-	if !validActivity(cmd.Activity) {
-		cmd.Activity = ActivityNeutral
-	}
-	return cmd
 }
