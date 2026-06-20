@@ -47,9 +47,10 @@ var Activities = []Activity{
 type ExpressionCommand struct {
 	Emotion  Emotion  `json:"emotion"`
 	Activity Activity `json:"activity"`
+	Message string `json:"message"`
 }
 
-func DecodeExpression(data []byte) (ExpressionCommand, error) {
+func DecodeExpression(data []byte, err error) (ExpressionCommand, error) {
 	var raw struct {
 		Emotion  string `json:"emotion"`
 		Activity string `json:"activity"`

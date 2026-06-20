@@ -1,8 +1,7 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,17 +13,8 @@ import (
 )
 
 func home(w http.ResponseWriter, r *http.Request, inbox *expression.ExpressionInbox){
-	var expressionCmd expression.ExpressionCommand
-	err := json.NewDecoder(r.Body).Decode(&expressionCmd)
-	if err != nil {
-		log.Printf("expression warning: decode expression: %v", err)
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-	
-	fmt.Println(expressionCmd)
-
-	inbox.Submit(expressionCmd)
+	cmd, _ := expression.DecodeExpression(io.ReadAll(r.Body))
+	inbox.Submit(cmd)
 }
 
 func main() {
