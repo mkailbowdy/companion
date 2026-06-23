@@ -14,7 +14,7 @@ import (
 
 func home(w http.ResponseWriter, r *http.Request, inbox *expression.ExpressionInbox){
 	cmd, _ := expression.DecodeExpression(io.ReadAll(r.Body))
-	inbox.Submit(cmd)
+	inbox.Submit(expression.NormalizeCommand(cmd))
 }
 
 func main() {
