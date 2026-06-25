@@ -32,11 +32,12 @@ type facePose struct {
 }
 
 type Game struct {
-	inbox *expression.ExpressionInbox
+	inbox *expression.FaceStateInbox
 	now   func() time.Time
 	rng   *rand.Rand
+	done  <-chan struct{}
 
-	command      expression.ExpressionCommand
+	command      expression.FaceState
 	pose         facePose
 	from, target facePose
 	transitionAt time.Time
@@ -47,9 +48,9 @@ type Game struct {
 	emotionIndex, activityIndex int
 }
 
-func NewGame(inbox *expression.ExpressionInbox, now func() time.Time, seed int64) *Game {
+func NewGame(inbox *expression.FaceStateInbox, now func() time.Time, seed int64) *Game {
 	t := now()
-	cmd := expression.ExpressionCommand{Emotion: expression.EmotionNeutral, Activity: expression.ActivityNeutral}
+	cmd := expression.FaceState{Emotion: expression.EmotionNeutral, Activity: expression.ActivityNeutral}
 	pose := poseFor(cmd)
 	g := &Game{
 		inbox: inbox,
@@ -67,7 +68,18 @@ func NewGame(inbox *expression.ExpressionInbox, now func() time.Time, seed int64
 	return g
 }
 
+func (g *Game) SetDone(done <-chan struct{}) {
+	g.done = done
+}
+
 func (g *Game) Update() error {
+	if g.done != nil {
+		select {
+		case <-g.done:
+			return ebiten.Termination
+		default:
+		}
+	}
 	now := g.now()
 	g.handleKeyboard()
 	if cmd, ok := g.inbox.Latest(); ok {
@@ -84,8 +96,8 @@ func (g *Game) Update() error {
 	return nil
 }
 
-func (g *Game) setCommand(cmd expression.ExpressionCommand, now time.Time) {
-	cmd = expression.NormalizeCommand(cmd)
+func (g *Game) setCommand(cmd expression.FaceState, now time.Time) {
+	cmd = expression.NormalizeFaceState(cmd)
 	if cmd == g.command {
 		return
 	}
@@ -101,22 +113,22 @@ func (g *Game) setCommand(cmd expression.ExpressionCommand, now time.Time) {
 func (g *Game) handleKeyboard() {
 	if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) {
 		g.emotionIndex = (g.emotionIndex + 1) % len(expression.Emotions)
-		g.inbox.Submit(expression.ExpressionCommand{Emotion: expression.Emotions[g.emotionIndex], Activity: g.command.Activity})
+		g.inbox.Submit(expression.FaceState{Emotion: expression.Emotions[g.emotionIndex], Activity: g.command.Activity})
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) {
 		g.emotionIndex = (g.emotionIndex - 1 + len(expression.Emotions)) % len(expression.Emotions)
-		g.inbox.Submit(expression.ExpressionCommand{Emotion: expression.Emotions[g.emotionIndex], Activity: g.command.Activity})
+		g.inbox.Submit(expression.FaceState{Emotion: expression.Emotions[g.emotionIndex], Activity: g.command.Activity})
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) {
 		g.activityIndex = (g.activityIndex + 1) % len(expression.Activities)
-		g.inbox.Submit(expression.ExpressionCommand{Emotion: g.command.Emotion, Activity: expression.Activities[g.activityIndex]})
+		g.inbox.Submit(expression.FaceState{Emotion: g.command.Emotion, Activity: expression.Activities[g.activityIndex]})
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
 		g.activityIndex = (g.activityIndex - 1 + len(expression.Activities)) % len(expression.Activities)
-		g.inbox.Submit(expression.ExpressionCommand{Emotion: g.command.Emotion, Activity: expression.Activities[g.activityIndex]})
+		g.inbox.Submit(expression.FaceState{Emotion: g.command.Emotion, Activity: expression.Activities[g.activityIndex]})
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
-		g.inbox.Submit(expression.ExpressionCommand{Emotion: expression.EmotionNeutral, Activity: expression.ActivityNeutral})
+		g.inbox.Submit(expression.FaceState{Emotion: expression.EmotionNeutral, Activity: expression.ActivityNeutral})
 		g.emotionIndex, g.activityIndex = 0, 0
 	}
 }
@@ -173,6 +185,17 @@ func (g *Game) animatedPose(t float64) facePose {
 	case expression.ActivityListening:
 		p.eyeScale *= 1 + 0.06*math.Sin(t*4)
 		p.gazeX = 0.08 * math.Sin(t*1.5)
+	}
+	if g.command.Speaking {
+		switch g.command.Activity {
+		case expression.ActivityLaughing:
+			p.mouthOpen = 0.7 + 0.3*math.Abs(math.Sin(t*9.5))
+		case expression.ActivityCrying:
+			p.mouthOpen = 0.12 + 0.5*math.Abs(math.Sin(t*9.5))
+		default:
+			p.mouthOpen = 0.2 + 0.75*math.Abs(math.Sin(t*9.5))
+			p.mouthWidth *= 0.9 + 0.1*math.Sin(t*4)
+		}
 	}
 	return p
 }
@@ -247,7 +270,7 @@ func (g *Game) naturalBlinkAmount(now time.Time) float64 {
 	return math.Sin(x * math.Pi)
 }
 
-func poseFor(cmd expression.ExpressionCommand) facePose {
+func poseFor(cmd expression.FaceState) facePose {
 	p := facePose{eyeOpen: 1, eyeScale: 1, mouthWidth: 1, mouthCurve: 0.05}
 	switch cmd.Emotion {
 	case expression.EmotionHappy:

@@ -1,17 +1,64 @@
-# BMO face
+# BMO voice face
 
-An animated, procedural BMO face for a 1280×720 Raspberry Pi display, built
-with Ebitengine.
+An animated BMO face and single-turn local voice loop for a Raspberry Pi:
 
-The code is arranged in a `Let's Go`-style tree:
+```text
+ALSA microphone -> RMS VAD -> whisper.cpp -> OpenClaw -> ElevenLabs -> ALSA speaker
+```
 
-- `cmd/bmo` contains the executable entrypoint.
-- `internal/expression` handles JSON input and the latest-wins inbox.
-- `internal/game` owns the Ebitengine scene and animation logic.
+Ebitengine stays on the main thread. Audio capture, transcription, network
+requests, speech generation, and playback run in one cancellable conversation
+goroutine.
+
+## Runtime requirements
+
+- 64-bit Linux, intended for Raspberry Pi 5
+- `arecord` and `aplay` from ALSA utilities
+- `whisper-cli` from whisper.cpp
+- English `ggml-base.en-q5_0.bin` Whisper model
+- `openclaw` with the Responses endpoint enabled
+- OpenClaw TTS configured with ElevenLabs
+- `ffmpeg`
+
+OpenClaw must enable `gateway.http.endpoints.responses.enabled`. Configure its
+TTS provider and voice in OpenClaw; this application does not contain
+ElevenLabs credentials or a voice ID.
+
+## Configuration
+
+The only required secret is:
+
+```sh
+export OPENCLAW_GATEWAY_TOKEN="..."
+```
+
+Defaults can be overridden with:
+
+| Variable | Default |
+| --- | --- |
+| `BMO_ARECORD_COMMAND` | `arecord` |
+| `BMO_WHISPER_COMMAND` | `whisper-cli` |
+| `BMO_OPENCLAW_COMMAND` | `openclaw` |
+| `BMO_FFMPEG_COMMAND` | `ffmpeg` |
+| `BMO_APLAY_COMMAND` | `aplay` |
+| `BMO_WHISPER_MODEL` | `models/ggml-base.en-q5_0.bin` |
+| `BMO_CAPTURE_DEVICE` | `default` |
+| `BMO_PLAYBACK_DEVICE` | `default` |
+| `BMO_OPENCLAW_URL` | `http://127.0.0.1:18789/v1/responses` |
+| `BMO_OPENCLAW_MODEL` | `openclaw/default` |
+| `BMO_OPENCLAW_USER` | `bmo-rpi` |
+| `BMO_STARTUP_TIMEOUT` | `15s` |
+| `BMO_WHISPER_TIMEOUT` | `90s` |
+| `BMO_RESPONSE_TIMEOUT` | `90s` |
+| `BMO_TTS_TIMEOUT` | `90s` |
+| `BMO_PLAYBACK_TIMEOUT` | `5m` |
+| `BMO_PLAYBACK_COOLDOWN` | `1s` |
+| `BMO_FAILURE_STATE_DELAY` | `1s` |
+
+At startup BMO verifies command availability, the Whisper model, gateway
+authentication, and that OpenClaw reports ElevenLabs as its TTS provider.
 
 ## Run
-
-The normal build starts fullscreen and hides the pointer:
 
 ```sh
 go run ./cmd/bmo
@@ -23,32 +70,30 @@ For desktop development:
 BMO_WINDOWED=1 go run ./cmd/bmo
 ```
 
-Use Left/Right to cycle emotions, Up/Down to cycle activities, and Space to
+Press Left/Right to cycle emotions, Up/Down to cycle activities, and Space to
 return to neutral.
 
-## Sending expression updates
+## Voice behavior
 
-Create the game with an `ExpressionInbox`. A receiver goroutine can decode an
-LLM response and submit it without touching Ebitengine state:
+Audio is captured as 16 kHz mono signed 16-bit PCM. The adaptive RMS detector
+uses 400 ms of pre-roll, requires 100 ms of speech to activate, ends after
+800 ms of silence, and caps an utterance at 20 seconds. Microphone capture is
+stopped during transcription, response generation, TTS, playback, and the
+one-second playback cooldown.
 
-```go
-command, warning := DecodeExpression(responseJSON)
-if warning != nil {
-    log.Printf("expression warning: %v", warning)
-}
-inbox.Submit(command)
+OpenClaw is required to call the pinned `deliver_response` function with a
+spoken `message`, an enum-validated `emotion`, and an enum-validated
+`activity`. Speaking is local renderer state, so mouth animation composes with
+semantic states such as laughing and crying.
+
+Raw audio files are temporary and removed after every turn. Conversation text
+is not logged by default. SIGINT and SIGTERM cancel active child processes.
+
+## Test
+
+```sh
+go test ./internal/...
+go build ./...
 ```
 
-The accepted JSON shape is:
-
-```json
-{"emotion":"happy","activity":"laughing"}
-```
-
-Supported emotions are `neutral`, `happy`, `sad`, `angry`, `surprised`,
-`scared`, `confused`, `sleepy`, and `excited`. Supported activities are
-`neutral`, `blinking`, `talking`, `laughing`, `crying`, `thinking`, and
-`listening`. Unknown or missing values become `neutral` and return a warning.
-
-The inbox has capacity one. If the producer runs faster than the display,
-unread commands are replaced so the face always converges on the latest state.
+Ebitengine tests require an X server; use `xvfb-run` on headless Linux.

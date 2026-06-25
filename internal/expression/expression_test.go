@@ -5,45 +5,48 @@ import (
 	"testing"
 )
 
-func TestDecodeExpression(t *testing.T) {
-	cmd, err := DecodeExpression([]byte(`{"emotion":" HAPPY ","activity":"Laughing"}`))
+func TestDecodeReplyEnvelope(t *testing.T) {
+	reply, err := DecodeReplyEnvelope([]byte(`{"message":" Hello! ","emotion":" HAPPY ","activity":"Laughing"}`))
 	if err != nil {
-		t.Fatalf("unexpected warning: %v", err)
+		t.Fatalf("DecodeReplyEnvelope: %v", err)
 	}
-	if cmd.Emotion != EmotionHappy || cmd.Activity != ActivityLaughing {
-		t.Fatalf("unexpected command: %+v", cmd)
+	want := ReplyEnvelope{Message: "Hello!", Emotion: EmotionHappy, Activity: ActivityLaughing}
+	if reply != want {
+		t.Fatalf("got %+v, want %+v", reply, want)
 	}
 }
 
-func TestDecodeExpressionFallsBackToNeutral(t *testing.T) {
-	cmd, err := DecodeExpression([]byte(`{"emotion":"delighted","activity":""}`))
+func TestDecodeReplyEnvelopeRejectsInvalidFields(t *testing.T) {
+	_, err := DecodeReplyEnvelope([]byte(`{"message":" ","emotion":"delighted","activity":""}`))
 	if err == nil {
-		t.Fatal("expected validation warning")
+		t.Fatal("expected validation error")
 	}
-	if !strings.Contains(err.Error(), "unsupported emotion") || !strings.Contains(err.Error(), "unsupported activity") {
-		t.Fatalf("incomplete warning: %v", err)
-	}
-	if cmd != (ExpressionCommand{Emotion: EmotionNeutral, Activity: ActivityNeutral}) {
-		t.Fatalf("unexpected fallback: %+v", cmd)
+	for _, part := range []string{"message is required", "unsupported emotion", "unsupported activity"} {
+		if !strings.Contains(err.Error(), part) {
+			t.Errorf("error %q does not contain %q", err, part)
+		}
 	}
 }
 
-func TestDecodeExpressionRejectsInvalidJSON(t *testing.T) {
-	if _, err := DecodeExpression([]byte(`{`)); err == nil {
+func TestDecodeReplyEnvelopeRejectsInvalidJSON(t *testing.T) {
+	if _, err := DecodeReplyEnvelope([]byte(`{`)); err == nil {
 		t.Fatal("expected JSON error")
 	}
+	if _, err := DecodeReplyEnvelope([]byte(`{"message":"hi","emotion":"happy","activity":"neutral","extra":true}`)); err == nil {
+		t.Fatal("expected unknown field error")
+	}
 }
 
-func TestExpressionInboxLatestWins(t *testing.T) {
-	inbox := NewExpressionInbox()
-	inbox.Submit(ExpressionCommand{Emotion: EmotionHappy, Activity: ActivityTalking})
-	inbox.Submit(ExpressionCommand{Emotion: EmotionSad, Activity: ActivityCrying})
+func TestFaceStateInboxLatestWins(t *testing.T) {
+	inbox := NewFaceStateInbox()
+	inbox.Submit(FaceState{Emotion: EmotionHappy, Activity: ActivityNeutral, Speaking: true})
+	inbox.Submit(FaceState{Emotion: EmotionSad, Activity: ActivityCrying})
 
 	got, ok := inbox.Latest()
 	if !ok {
-		t.Fatal("expected a command")
+		t.Fatal("expected a state")
 	}
-	want := ExpressionCommand{Emotion: EmotionSad, Activity: ActivityCrying}
+	want := FaceState{Emotion: EmotionSad, Activity: ActivityCrying}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -54,12 +57,12 @@ func TestExpressionInboxLatestWins(t *testing.T) {
 
 func TestAllVocabularyValuesAreValid(t *testing.T) {
 	for _, emotion := range Emotions {
-		if !validEmotion(emotion) {
+		if !ValidEmotion(emotion) {
 			t.Errorf("emotion %q is not valid", emotion)
 		}
 	}
 	for _, activity := range Activities {
-		if !validActivity(activity) {
+		if !ValidActivity(activity) {
 			t.Errorf("activity %q is not valid", activity)
 		}
 	}

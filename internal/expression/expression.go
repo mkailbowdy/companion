@@ -1,9 +1,11 @@
 package expression
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 )
@@ -44,50 +46,69 @@ var Activities = []Activity{
 	ActivityCrying, ActivityThinking, ActivityListening,
 }
 
-type ExpressionCommand struct {
+// ReplyEnvelope is the structured result requested from OpenClaw. Speaking is
+// intentionally absent: it is local playback state, not model-generated state.
+type ReplyEnvelope struct {
+	Message  string   `json:"message"`
 	Emotion  Emotion  `json:"emotion"`
 	Activity Activity `json:"activity"`
-	Message string `json:"message"`
 }
 
-func DecodeExpression(data []byte, err error) (ExpressionCommand, error) {
+type FaceState struct {
+	Emotion  Emotion
+	Activity Activity
+	Speaking bool
+}
+
+func DecodeReplyEnvelope(data []byte) (ReplyEnvelope, error) {
 	var raw struct {
+		Message  string `json:"message"`
 		Emotion  string `json:"emotion"`
 		Activity string `json:"activity"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return ExpressionCommand{}, fmt.Errorf("decode expression: %w", err)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&raw); err != nil {
+		return ReplyEnvelope{}, fmt.Errorf("decode reply envelope: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return ReplyEnvelope{}, fmt.Errorf("decode reply envelope: trailing JSON")
 	}
 
-	cmd := ExpressionCommand{
+	reply := ReplyEnvelope{
+		Message:  strings.TrimSpace(raw.Message),
 		Emotion:  Emotion(strings.ToLower(strings.TrimSpace(raw.Emotion))),
 		Activity: Activity(strings.ToLower(strings.TrimSpace(raw.Activity))),
 	}
-	var warnings []error
-	if !validEmotion(cmd.Emotion) {
-		warnings = append(warnings, fmt.Errorf("unsupported emotion %q; using neutral", raw.Emotion))
-		cmd.Emotion = EmotionNeutral
+	var validationErrors []error
+	if reply.Message == "" {
+		validationErrors = append(validationErrors, errors.New("message is required"))
 	}
-	if !validActivity(cmd.Activity) {
-		warnings = append(warnings, fmt.Errorf("unsupported activity %q; using neutral", raw.Activity))
-		cmd.Activity = ActivityNeutral
+	if !ValidEmotion(reply.Emotion) {
+		validationErrors = append(validationErrors, fmt.Errorf("unsupported emotion %q", raw.Emotion))
 	}
-	return cmd, errors.Join(warnings...)
+	if !ValidActivity(reply.Activity) {
+		validationErrors = append(validationErrors, fmt.Errorf("unsupported activity %q", raw.Activity))
+	}
+	if err := errors.Join(validationErrors...); err != nil {
+		return ReplyEnvelope{}, err
+	}
+	return reply, nil
 }
 
-func NormalizeCommand(cmd ExpressionCommand) ExpressionCommand {
-	cmd.Emotion = Emotion(strings.ToLower(strings.TrimSpace(string(cmd.Emotion))))
-	cmd.Activity = Activity(strings.ToLower(strings.TrimSpace(string(cmd.Activity))))
-	if !validEmotion(cmd.Emotion) {
-		cmd.Emotion = EmotionNeutral
+func NormalizeFaceState(state FaceState) FaceState {
+	state.Emotion = Emotion(strings.ToLower(strings.TrimSpace(string(state.Emotion))))
+	state.Activity = Activity(strings.ToLower(strings.TrimSpace(string(state.Activity))))
+	if !ValidEmotion(state.Emotion) {
+		state.Emotion = EmotionNeutral
 	}
-	if !validActivity(cmd.Activity) {
-		cmd.Activity = ActivityNeutral
+	if !ValidActivity(state.Activity) {
+		state.Activity = ActivityNeutral
 	}
-	return cmd
+	return state
 }
 
-func validEmotion(value Emotion) bool {
+func ValidEmotion(value Emotion) bool {
 	for _, candidate := range Emotions {
 		if value == candidate {
 			return true
@@ -96,7 +117,7 @@ func validEmotion(value Emotion) bool {
 	return false
 }
 
-func validActivity(value Activity) bool {
+func ValidActivity(value Activity) bool {
 	for _, candidate := range Activities {
 		if value == candidate {
 			return true
@@ -105,51 +126,59 @@ func validActivity(value Activity) bool {
 	return false
 }
 
-// ExpressionInbox is safe for concurrent producers. Its capacity is one:
-// a new command replaces an unread stale command.
-type ExpressionInbox struct {
-	commands chan ExpressionCommand
-	mu       sync.Mutex
+// FaceStateInbox is safe for concurrent producers. Its capacity is one: a new
+// state replaces an unread stale state.
+type FaceStateInbox struct {
+	states chan FaceState
+	mu     sync.Mutex
 }
 
-func NewExpressionInbox() *ExpressionInbox {
-	return &ExpressionInbox{
-		commands: make(chan ExpressionCommand, 1),
+func NewFaceStateInbox() *FaceStateInbox {
+	return &FaceStateInbox{
+		states: make(chan FaceState, 1),
 	}
 }
 
-func (i *ExpressionInbox) Submit(cmd ExpressionCommand) {
+func (i *FaceStateInbox) Submit(state FaceState) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	cmd = NormalizeCommand(cmd)
+	state = NormalizeFaceState(state)
 	select {
-	case i.commands <- cmd:
+	case i.states <- state:
 		return
 	default:
 	}
 	select {
-	case <-i.commands:
+	case <-i.states:
 	default:
 	}
 	select {
-	case i.commands <- cmd:
+	case i.states <- state:
 	default:
 	}
 }
 
-func (i *ExpressionInbox) Latest() (ExpressionCommand, bool) {
+func (i *FaceStateInbox) Latest() (FaceState, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	var latest ExpressionCommand
+	var latest FaceState
 	found := false
 	for {
 		select {
-		case latest = <-i.commands:
+		case latest = <-i.states:
 			found = true
 		default:
 			return latest, found
 		}
 	}
+}
+
+// These aliases keep construction source-compatible for embedders while the
+// inbox payload has changed from HTTP expression commands to local face state.
+type ExpressionInbox = FaceStateInbox
+
+func NewExpressionInbox() *FaceStateInbox {
+	return NewFaceStateInbox()
 }
