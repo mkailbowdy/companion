@@ -2,9 +2,11 @@ package voice
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -27,6 +29,9 @@ type Config struct {
 	OpenClawModel  string
 	OpenClawUser   string
 	GatewayToken   string
+
+	VADMinimumSpeechRMS float64
+	VADNoiseMultiplier  float64
 
 	StartupTimeout    time.Duration
 	WhisperTimeout    time.Duration
@@ -54,10 +59,19 @@ func LoadConfig() (Config, error) {
 		OpenClawUser:   envOr("BMO_OPENCLAW_USER", "bmo-rpi"),
 		GatewayToken:   os.Getenv("OPENCLAW_GATEWAY_TOKEN"),
 
+		VADMinimumSpeechRMS: 60,
+		VADNoiseMultiplier:  2,
+
 		TempDir: os.TempDir(),
 	}
 
 	var err error
+	if cfg.VADMinimumSpeechRMS, err = envFloat("BMO_VAD_MIN_RMS", cfg.VADMinimumSpeechRMS); err != nil {
+		return Config{}, err
+	}
+	if cfg.VADNoiseMultiplier, err = envFloat("BMO_VAD_NOISE_MULTIPLIER", cfg.VADNoiseMultiplier); err != nil {
+		return Config{}, err
+	}
 	if cfg.StartupTimeout, err = envDuration("BMO_STARTUP_TIMEOUT", 15*time.Second); err != nil {
 		return Config{}, err
 	}
@@ -118,6 +132,16 @@ func (c Config) ValidateStatic() error {
 	if c.OpenClawURL == "" || c.OpenClawModel == "" || c.OpenClawUser == "" {
 		return fmt.Errorf("OpenClaw URL, model, and user must be configured")
 	}
+	if c.VADMinimumSpeechRMS <= 0 ||
+		math.IsNaN(c.VADMinimumSpeechRMS) ||
+		math.IsInf(c.VADMinimumSpeechRMS, 0) {
+		return fmt.Errorf("VAD minimum speech RMS must be positive")
+	}
+	if c.VADNoiseMultiplier <= 1 ||
+		math.IsNaN(c.VADNoiseMultiplier) ||
+		math.IsInf(c.VADNoiseMultiplier, 0) {
+		return fmt.Errorf("VAD noise multiplier must be greater than 1")
+	}
 	for name, timeout := range map[string]time.Duration{
 		"startup": c.StartupTimeout, "Whisper": c.WhisperTimeout,
 		"response": c.ResponseTimeout, "TTS": c.TTSTimeout,
@@ -160,4 +184,16 @@ func envDuration(name string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s: %w", name, err)
 	}
 	return duration, nil
+}
+
+func envFloat(name string, fallback float64) (float64, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", name, err)
+	}
+	return number, nil
 }

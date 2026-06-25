@@ -9,7 +9,10 @@ import (
 )
 
 func NewOrchestrator(cfg Config, states *expression.FaceStateInbox, logger *log.Logger) (*Orchestrator, *OpenClawClient, *OpenClawSpeaker, error) {
-	vad, err := NewVAD(DefaultVADConfig())
+	vadConfig := DefaultVADConfig()
+	vadConfig.MinimumSpeechRMS = cfg.VADMinimumSpeechRMS
+	vadConfig.NoiseMultiplier = cfg.VADNoiseMultiplier
+	vad, err := NewVAD(vadConfig)
 	if err != nil {
 		return nil, nil, nil, err
 	}

@@ -47,6 +47,8 @@ Defaults can be overridden with:
 | `BMO_OPENCLAW_URL` | `http://127.0.0.1:18789/v1/responses` |
 | `BMO_OPENCLAW_MODEL` | `openclaw/default` |
 | `BMO_OPENCLAW_USER` | `bmo-rpi` |
+| `BMO_VAD_MIN_RMS` | `60` |
+| `BMO_VAD_NOISE_MULTIPLIER` | `2` |
 | `BMO_STARTUP_TIMEOUT` | `15s` |
 | `BMO_WHISPER_TIMEOUT` | `90s` |
 | `BMO_RESPONSE_TIMEOUT` | `90s` |
@@ -80,6 +82,11 @@ uses 400 ms of pre-roll, requires 100 ms of speech to activate, ends after
 800 ms of silence, and caps an utterance at 20 seconds. Microphone capture is
 stopped during transcription, response generation, TTS, playback, and the
 one-second playback cooldown.
+
+For unusually quiet microphones, lower `BMO_VAD_MIN_RMS`. For a microphone
+peaking near `-40 dBFS`, start with `40`. Lower
+`BMO_VAD_NOISE_MULTIPLIER` toward `1.5` if speech remains too close to the
+ambient noise floor; increase either value if ambient noise triggers BMO.
 
 OpenClaw is required to call the pinned `deliver_response` function with a
 spoken `message`, an enum-validated `emotion`, and an enum-validated

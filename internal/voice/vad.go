@@ -31,8 +31,8 @@ func DefaultVADConfig() VADConfig {
 		ActivationFrames:   5,    // 100 ms
 		TrailingFrames:     40,   // 800 ms
 		MaxUtteranceFrames: 1000, // 20 seconds
-		MinimumSpeechRMS:   500,
-		NoiseMultiplier:    3,
+		MinimumSpeechRMS:   60,
+		NoiseMultiplier:    2,
 		NoiseSmoothing:     0.95,
 	}
 }
@@ -47,7 +47,11 @@ func NewVAD(config VADConfig) (*VAD, error) {
 		config.TrailingFrames <= 0 ||
 		config.MaxUtteranceFrames <= config.PreRollFrames ||
 		config.MinimumSpeechRMS <= 0 ||
+		math.IsNaN(config.MinimumSpeechRMS) ||
+		math.IsInf(config.MinimumSpeechRMS, 0) ||
 		config.NoiseMultiplier <= 1 ||
+		math.IsNaN(config.NoiseMultiplier) ||
+		math.IsInf(config.NoiseMultiplier, 0) ||
 		config.NoiseSmoothing < 0 ||
 		config.NoiseSmoothing >= 1 {
 		return nil, errors.New("invalid VAD configuration")
