@@ -12,7 +12,7 @@ import (
 	"bmo.pushiro.com/internal/expression"
 )
 
-func TestOpenClawClientRequestAndFunctionCall(t *testing.T) {
+func TestOpenClawClientRequestsStrictJSON(t *testing.T) {
 	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -27,9 +27,11 @@ func TestOpenClawClientRequestAndFunctionCall(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"output":[{
-				"type":"function_call",
-				"name":"deliver_response",
-				"arguments":"{\"message\":\"Mathematical!\",\"emotion\":\"happy\",\"activity\":\"laughing\"}"
+				"type":"message",
+				"content":[{
+					"type":"output_text",
+					"text":"{\"message\":\"Mathematical!\",\"emotion\":\"happy\",\"activity\":\"laughing\"}"
+				}]
 			}]
 		}`))
 	}))
@@ -55,15 +57,15 @@ func TestOpenClawClientRequestAndFunctionCall(t *testing.T) {
 	if requestBody["stream"] != false {
 		t.Fatalf("stream = %#v", requestBody["stream"])
 	}
-	toolChoice := requestBody["tool_choice"].(map[string]any)
-	if toolChoice["name"] != "deliver_response" {
-		t.Fatalf("tool choice = %#v", toolChoice)
+	if _, ok := requestBody["tool_choice"]; ok {
+		t.Fatalf("request unexpectedly included tool_choice: %#v", requestBody)
 	}
-	tools := requestBody["tools"].([]any)
-	tool := tools[0].(map[string]any)
-	parameters := tool["parameters"].(map[string]any)
-	if parameters["additionalProperties"] != false {
-		t.Fatalf("tool schema is not closed: %#v", parameters)
+	if _, ok := requestBody["tools"]; ok {
+		t.Fatalf("request unexpectedly included tools: %#v", requestBody)
+	}
+	instructions, _ := requestBody["instructions"].(string)
+	if !strings.Contains(instructions, "exactly one JSON object") {
+		t.Fatalf("instructions = %q", instructions)
 	}
 }
 
@@ -81,7 +83,7 @@ func TestOpenClawClientRejectsHTTPError(t *testing.T) {
 	}
 }
 
-func TestOpenClawClientFallsBackToStrictJSONWhenToolCallIsMissing(t *testing.T) {
+func TestOpenClawClientUsesOneRequest(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -89,41 +91,21 @@ func TestOpenClawClientFallsBackToStrictJSONWhenToolCallIsMissing(t *testing.T) 
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		switch requests {
-		case 1:
-			if _, ok := request["tool_choice"]; !ok {
-				t.Error("primary request did not pin deliver_response")
-			}
-			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write([]byte(`{
-				"error":{
-					"type":"api_error",
-					"message":"tool_choice required a deliver_response tool call, but the agent did not produce one"
-				}
-			}`))
-		case 2:
-			if _, ok := request["tools"]; ok {
-				t.Error("fallback request unexpectedly included tools")
-			}
-			if _, ok := request["tool_choice"]; ok {
-				t.Error("fallback request unexpectedly included tool_choice")
-			}
-			instructions, _ := request["instructions"].(string)
-			if !strings.Contains(instructions, "exactly one JSON object") {
-				t.Errorf("fallback instructions = %q", instructions)
-			}
-			_, _ = w.Write([]byte(`{
-				"output":[{
-					"type":"message",
-					"content":[{
-						"type":"output_text",
-						"text":"{\"message\":\"Hi there!\",\"emotion\":\"happy\",\"activity\":\"neutral\"}"
-					}]
-				}]
-			}`))
-		default:
-			t.Errorf("unexpected request %d", requests)
+		if _, ok := request["tools"]; ok {
+			t.Error("request unexpectedly included tools")
 		}
+		if _, ok := request["tool_choice"]; ok {
+			t.Error("request unexpectedly included tool_choice")
+		}
+		_, _ = w.Write([]byte(`{
+			"output":[{
+				"type":"message",
+				"content":[{
+					"type":"output_text",
+					"text":"{\"message\":\"Hi there!\",\"emotion\":\"happy\",\"activity\":\"neutral\"}"
+				}]
+			}]
+		}`))
 	}))
 	defer server.Close()
 
@@ -141,25 +123,15 @@ func TestOpenClawClientFallsBackToStrictJSONWhenToolCallIsMissing(t *testing.T) 
 	if reply != want {
 		t.Fatalf("got %+v, want %+v", reply, want)
 	}
-	if requests != 2 {
-		t.Fatalf("requests = %d, want 2", requests)
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
 	}
 }
 
-func TestOpenClawClientFallsBackToPlainTextWhenAgentIgnoresJSON(t *testing.T) {
+func TestOpenClawClientAcceptsPlainTextWhenAgentIgnoresJSON(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests++
-		if requests == 1 {
-			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write([]byte(`{
-				"error":{
-					"type":"api_error",
-					"message":"tool_choice required a deliver_response tool call, but the agent did not produce one"
-				}
-			}`))
-			return
-		}
 		_, _ = w.Write([]byte(`{
 			"output":[{
 				"type":"message",
@@ -187,6 +159,9 @@ func TestOpenClawClientFallsBackToPlainTextWhenAgentIgnoresJSON(t *testing.T) {
 	}
 	if reply != want {
 		t.Fatalf("got %+v, want %+v", reply, want)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
 	}
 }
 

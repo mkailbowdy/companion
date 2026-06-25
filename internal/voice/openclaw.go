@@ -44,22 +44,12 @@ type functionTool struct {
 }
 
 func (c *OpenClawClient) Respond(ctx context.Context, transcript string) (expression.ReplyEnvelope, error) {
-	reply, err := c.respond(ctx, transcript, responseModeTool)
-	if err == nil {
-		return reply, nil
-	}
-	if !isMissingRequiredToolCall(err) {
-		return expression.ReplyEnvelope{}, err
-	}
-
-	reply, fallbackErr := c.respond(ctx, transcript, responseModeJSON)
-	if fallbackErr != nil {
-		return expression.ReplyEnvelope{}, fmt.Errorf(
-			"OpenClaw did not produce the required tool call; JSON fallback also failed: %w",
-			fallbackErr,
-		)
-	}
-	return reply, nil
+	// OpenClaw's Codex runtime currently accepts caller-supplied function tools
+	// but cannot emit the matching structured function call. A pinned
+	// deliver_response request therefore waits for a full model turn and ends
+	// in HTTP 502 before the JSON fallback can run. Request strict JSON
+	// directly so the robot gets one bounded response turn.
+	return c.respond(ctx, transcript, responseModeJSON)
 }
 
 func (c *OpenClawClient) respond(

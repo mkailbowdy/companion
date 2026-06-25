@@ -1,0 +1,8 @@
+
+# Local build/model artifacts
+/bin/
+/models/*.bin
+
+# Local build/model artifacts
+/bin/
+/models/*.bin
