@@ -33,6 +33,7 @@ type responseMode int
 const (
 	responseModeTool responseMode = iota
 	responseModeJSON
+	maxPlainTextRunes = 2000
 )
 
 type functionTool struct {
@@ -247,11 +248,23 @@ func decodeOutputText(data []byte) (expression.ReplyEnvelope, error) {
 		return expression.ReplyEnvelope{}, fmt.Errorf("OpenClaw JSON fallback returned no output text")
 	}
 	text = stripJSONFence(text)
-	reply, err := expression.DecodeReplyEnvelope([]byte(text))
-	if err != nil {
-		return expression.ReplyEnvelope{}, fmt.Errorf("validate OpenClaw JSON fallback: %w", err)
+	if strings.HasPrefix(text, "{") || strings.HasPrefix(text, "[") {
+		reply, err := expression.DecodeReplyEnvelope([]byte(text))
+		if err != nil {
+			return expression.ReplyEnvelope{}, fmt.Errorf("validate OpenClaw JSON fallback: %w", err)
+		}
+		return reply, nil
 	}
-	return reply, nil
+
+	message := sanitizePlainText(text)
+	if message == "" {
+		return expression.ReplyEnvelope{}, fmt.Errorf("OpenClaw fallback returned empty plain text")
+	}
+	return expression.ReplyEnvelope{
+		Message:  message,
+		Emotion:  expression.EmotionNeutral,
+		Activity: expression.ActivityNeutral,
+	}, nil
 }
 
 func jsonFallbackInstructions() string {
@@ -279,6 +292,16 @@ func stripJSONFence(text string) string {
 		return text
 	}
 	return strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
+}
+
+func sanitizePlainText(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) > maxPlainTextRunes {
+		runes = runes[:maxPlainTextRunes]
+		text = strings.TrimSpace(string(runes)) + "…"
+	}
+	return text
 }
 
 func isMissingRequiredToolCall(err error) bool {

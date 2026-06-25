@@ -146,6 +146,50 @@ func TestOpenClawClientFallsBackToStrictJSONWhenToolCallIsMissing(t *testing.T) 
 	}
 }
 
+func TestOpenClawClientFallsBackToPlainTextWhenAgentIgnoresJSON(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{
+				"error":{
+					"type":"api_error",
+					"message":"tool_choice required a deliver_response tool call, but the agent did not produce one"
+				}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"output":[{
+				"type":"message",
+				"content":[{
+					"type":"output_text",
+					"text":"I am ready to play! What should we do?"
+				}]
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	client := &OpenClawClient{
+		URL: server.URL, Model: "openclaw/default", User: "bmo-rpi",
+		Token: "secret", Timeout: time.Second,
+	}
+	reply, err := client.Respond(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	want := expression.ReplyEnvelope{
+		Message:  "I am ready to play! What should we do?",
+		Emotion:  expression.EmotionNeutral,
+		Activity: expression.ActivityNeutral,
+	}
+	if reply != want {
+		t.Fatalf("got %+v, want %+v", reply, want)
+	}
+}
+
 func TestOpenClawClientDoesNotFallbackForOtherHTTPFailures(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -187,6 +231,31 @@ func TestDecodeOutputTextAcceptsFencedJSONButStillValidatesSchema(t *testing.T) 
 	}`))
 	if err == nil {
 		t.Fatal("expected invalid fallback enum to fail")
+	}
+}
+
+func TestDecodeOutputTextSanitizesAndLimitsPlainText(t *testing.T) {
+	response, err := json.Marshal(map[string]string{
+		"output_text": "  Hello,\n\nfriend!\t" + strings.Repeat("x", maxPlainTextRunes),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := decodeOutputText(response)
+	if err != nil {
+		t.Fatalf("decodeOutputText: %v", err)
+	}
+	if !strings.HasPrefix(reply.Message, "Hello, friend!") {
+		t.Fatalf("message was not normalized: %q", reply.Message)
+	}
+	if !strings.HasSuffix(reply.Message, "…") {
+		t.Fatalf("message was not truncated: %q", reply.Message)
+	}
+	if len([]rune(reply.Message)) > maxPlainTextRunes+1 {
+		t.Fatalf("message has %d runes", len([]rune(reply.Message)))
+	}
+	if reply.Emotion != expression.EmotionNeutral || reply.Activity != expression.ActivityNeutral {
+		t.Fatalf("plain-text state = %+v", reply)
 	}
 }
 
