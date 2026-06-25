@@ -103,12 +103,13 @@ func (o *Orchestrator) runTurn(ctx context.Context) error {
 		return err
 	}
 
-	o.States.Submit(expression.FaceState{
-		Emotion:  reply.Emotion,
-		Activity: reply.Activity,
-		Speaking: true,
-	})
-	if err := o.Speaker.Speak(ctx, reply.Message); err != nil {
+	if err := o.Speaker.Speak(ctx, reply.Message, func() {
+		o.States.Submit(expression.FaceState{
+			Emotion:  reply.Emotion,
+			Activity: reply.Activity,
+			Speaking: true,
+		})
+	}); err != nil {
 		return err
 	}
 

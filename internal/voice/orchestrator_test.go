@@ -29,10 +29,10 @@ func (f responderFunc) Respond(ctx context.Context, text string) (expression.Rep
 	return f(ctx, text)
 }
 
-type speakerFunc func(context.Context, string) error
+type speakerFunc func(context.Context, string, func()) error
 
-func (f speakerFunc) Speak(ctx context.Context, text string) error {
-	return f(ctx, text)
+func (f speakerFunc) Speak(ctx context.Context, text string, onPlaybackStart func()) error {
+	return f(ctx, text, onPlaybackStart)
 }
 
 type stateRecorder struct {
@@ -61,10 +61,14 @@ func TestOrchestratorCompleteTurnStateProgression(t *testing.T) {
 				Message: "Algebraic!", Emotion: expression.EmotionHappy, Activity: expression.ActivityLaughing,
 			}, nil
 		}),
-		Speaker: speakerFunc(func(_ context.Context, text string) error {
+		Speaker: speakerFunc(func(_ context.Context, text string, onPlaybackStart func()) error {
 			if text != "Algebraic!" {
 				t.Fatalf("speech = %q", text)
 			}
+			if got := states.states[len(states.states)-1].Activity; got != expression.ActivityThinking {
+				t.Fatalf("state before playback = %q, want thinking", got)
+			}
+			onPlaybackStart()
 			return nil
 		}),
 		States:         states,
@@ -89,6 +93,39 @@ func TestOrchestratorCompleteTurnStateProgression(t *testing.T) {
 	}
 }
 
+func TestOrchestratorDoesNotAnimateSpeakingBeforePlaybackStarts(t *testing.T) {
+	states := &stateRecorder{}
+	orchestrator := &Orchestrator{
+		Listener: listenerFunc(func(_ context.Context, onSpeech func()) ([]int16, error) {
+			onSpeech()
+			return []int16{1}, nil
+		}),
+		Transcriber: transcriberFunc(func(context.Context, string) (string, error) {
+			return "hello", nil
+		}),
+		Responder: responderFunc(func(context.Context, string) (expression.ReplyEnvelope, error) {
+			return expression.ReplyEnvelope{
+				Message: "hi", Emotion: expression.EmotionHappy, Activity: expression.ActivityTalking,
+			}, nil
+		}),
+		Speaker: speakerFunc(func(context.Context, string, func()) error {
+			return io.ErrUnexpectedEOF
+		}),
+		States:         states,
+		Logger:         log.New(io.Discard, "", 0),
+		TempDir:        t.TempDir(),
+		currentEmotion: expression.EmotionNeutral,
+	}
+	if err := orchestrator.runTurn(context.Background()); err == nil {
+		t.Fatal("expected speaker preparation failure")
+	}
+	for _, state := range states.states {
+		if state.Speaking {
+			t.Fatalf("speaking activated before playback: %+v", states.states)
+		}
+	}
+}
+
 func TestOrchestratorFailureShowsConfusedAndResumes(t *testing.T) {
 	states := &stateRecorder{}
 	calls := 0
@@ -104,7 +141,10 @@ func TestOrchestratorFailureShowsConfusedAndResumes(t *testing.T) {
 		Responder: responderFunc(func(context.Context, string) (expression.ReplyEnvelope, error) {
 			return expression.ReplyEnvelope{}, nil
 		}),
-		Speaker: speakerFunc(func(context.Context, string) error { return nil }),
+		Speaker: speakerFunc(func(_ context.Context, _ string, onPlaybackStart func()) error {
+			onPlaybackStart()
+			return nil
+		}),
 		States:  states,
 		Logger:  log.New(io.Discard, "", 0),
 		TempDir: t.TempDir(),
@@ -143,7 +183,8 @@ func TestOrchestratorWaitsForPlaybackCooldown(t *testing.T) {
 				Message: "hi", Emotion: expression.EmotionHappy, Activity: expression.ActivityNeutral,
 			}, nil
 		}),
-		Speaker: speakerFunc(func(context.Context, string) error {
+		Speaker: speakerFunc(func(_ context.Context, _ string, onPlaybackStart func()) error {
+			onPlaybackStart()
 			firstFinished = time.Now()
 			return nil
 		}),

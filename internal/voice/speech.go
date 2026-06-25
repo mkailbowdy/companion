@@ -11,7 +11,7 @@ import (
 )
 
 type Speaker interface {
-	Speak(context.Context, string) error
+	Speak(context.Context, string, func()) error
 }
 
 type OpenClawSpeaker struct {
@@ -43,7 +43,7 @@ func (s *OpenClawSpeaker) Validate(ctx context.Context) error {
 	return nil
 }
 
-func (s *OpenClawSpeaker) Speak(ctx context.Context, text string) error {
+func (s *OpenClawSpeaker) Speak(ctx context.Context, text string, onPlaybackStart func()) error {
 	requestedPath, err := tempPath(s.TempDir, "bmo-tts-*.mp3")
 	if err != nil {
 		return err
@@ -99,6 +99,12 @@ func (s *OpenClawSpeaker) Speak(ctx context.Context, text string) error {
 		return fmt.Errorf("convert speech audio: %w", err)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if onPlaybackStart != nil {
+		onPlaybackStart()
+	}
 	playCtx, cancelPlay := context.WithTimeout(ctx, s.PlaybackTimeout)
 	_, err = s.Runner.Run(playCtx, s.AplayCommand, "-q", "-D", s.PlaybackDevice, wavPath)
 	cancelPlay()

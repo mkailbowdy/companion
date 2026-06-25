@@ -11,6 +11,7 @@ import (
 
 func TestOpenClawSpeakerRunsTTSConversionAndPlayback(t *testing.T) {
 	var commands []string
+	playbackStarted := false
 	speaker := &OpenClawSpeaker{
 		OpenClawCommand: "openclaw",
 		FFmpegCommand:   "ffmpeg",
@@ -33,8 +34,14 @@ func TestOpenClawSpeakerRunsTTSConversionAndPlayback(t *testing.T) {
 				result := `{"ok":true,"provider":"elevenlabs","outputs":[{"path":"` + args[index+1] + `"}]}`
 				return []byte(result), os.WriteFile(args[index+1], []byte("mp3"), 0o600)
 			case "ffmpeg":
+				if playbackStarted {
+					t.Fatal("playback callback ran before audio conversion finished")
+				}
 				return nil, os.WriteFile(args[len(args)-1], []byte("wav"), 0o600)
 			case "aplay":
+				if !playbackStarted {
+					t.Fatal("playback callback did not run before aplay")
+				}
 				if !slices.Contains(args, "hw:1,0") {
 					t.Fatalf("unexpected playback args: %v", args)
 				}
@@ -42,7 +49,9 @@ func TestOpenClawSpeakerRunsTTSConversionAndPlayback(t *testing.T) {
 			return nil, nil
 		}),
 	}
-	if err := speaker.Speak(context.Background(), "hello"); err != nil {
+	if err := speaker.Speak(context.Background(), "hello", func() {
+		playbackStarted = true
+	}); err != nil {
 		t.Fatalf("Speak: %v", err)
 	}
 	if got, want := commands, []string{"openclaw", "ffmpeg", "aplay"}; !slices.Equal(got, want) {
