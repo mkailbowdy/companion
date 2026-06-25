@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +28,13 @@ type OpenClawClient struct {
 	Client  *http.Client
 }
 
+type responseMode int
+
+const (
+	responseModeTool responseMode = iota
+	responseModeJSON
+)
+
 type functionTool struct {
 	Type        string         `json:"type"`
 	Name        string         `json:"name"`
@@ -35,18 +43,49 @@ type functionTool struct {
 }
 
 func (c *OpenClawClient) Respond(ctx context.Context, transcript string) (expression.ReplyEnvelope, error) {
+	reply, err := c.respond(ctx, transcript, responseModeTool)
+	if err == nil {
+		return reply, nil
+	}
+	if !isMissingRequiredToolCall(err) {
+		return expression.ReplyEnvelope{}, err
+	}
+
+	reply, fallbackErr := c.respond(ctx, transcript, responseModeJSON)
+	if fallbackErr != nil {
+		return expression.ReplyEnvelope{}, fmt.Errorf(
+			"OpenClaw did not produce the required tool call; JSON fallback also failed: %w",
+			fallbackErr,
+		)
+	}
+	return reply, nil
+}
+
+func (c *OpenClawClient) respond(
+	ctx context.Context,
+	transcript string,
+	mode responseMode,
+) (expression.ReplyEnvelope, error) {
 	requestBody := map[string]any{
 		"model":  c.Model,
 		"user":   c.User,
 		"input":  transcript,
 		"stream": false,
-		"instructions": "Respond as BMO. You must call deliver_response exactly once. " +
-			"Put only the words that should be spoken in message and choose the face emotion and semantic activity.",
-		"tools": []functionTool{deliverResponseTool()},
-		"tool_choice": map[string]string{
+	}
+	switch mode {
+	case responseModeTool:
+		requestBody["instructions"] = "Respond as BMO. You must call deliver_response exactly once. " +
+			"Do not answer with ordinary text. Put only the words that should be spoken in message " +
+			"and choose the face emotion and semantic activity."
+		requestBody["tools"] = []functionTool{deliverResponseTool()}
+		requestBody["tool_choice"] = map[string]string{
 			"type": "function",
 			"name": "deliver_response",
-		},
+		}
+	case responseModeJSON:
+		requestBody["instructions"] = jsonFallbackInstructions()
+	default:
+		return expression.ReplyEnvelope{}, fmt.Errorf("unsupported OpenClaw response mode")
 	}
 	body, err := json.Marshal(requestBody)
 	if err != nil {
@@ -73,6 +112,9 @@ func (c *OpenClawClient) Respond(ctx context.Context, transcript string) (expres
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return expression.ReplyEnvelope{}, decodeOpenClawError(response.StatusCode, data)
+	}
+	if mode == responseModeJSON {
+		return decodeOutputText(data)
 	}
 	return decodeFunctionCall(data)
 }
@@ -170,6 +212,100 @@ func decodeFunctionCall(data []byte) (expression.ReplyEnvelope, error) {
 	return expression.ReplyEnvelope{}, fmt.Errorf("OpenClaw response did not call deliver_response")
 }
 
+func decodeOutputText(data []byte) (expression.ReplyEnvelope, error) {
+	var response struct {
+		Output []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+		OutputText string `json:"output_text"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return expression.ReplyEnvelope{}, fmt.Errorf("decode OpenClaw JSON fallback response: %w", err)
+	}
+	text := strings.TrimSpace(response.OutputText)
+	if text == "" {
+		for _, item := range response.Output {
+			if item.Type != "message" {
+				continue
+			}
+			for _, content := range item.Content {
+				if content.Type == "output_text" && strings.TrimSpace(content.Text) != "" {
+					text = strings.TrimSpace(content.Text)
+					break
+				}
+			}
+			if text != "" {
+				break
+			}
+		}
+	}
+	if text == "" {
+		return expression.ReplyEnvelope{}, fmt.Errorf("OpenClaw JSON fallback returned no output text")
+	}
+	text = stripJSONFence(text)
+	reply, err := expression.DecodeReplyEnvelope([]byte(text))
+	if err != nil {
+		return expression.ReplyEnvelope{}, fmt.Errorf("validate OpenClaw JSON fallback: %w", err)
+	}
+	return reply, nil
+}
+
+func jsonFallbackInstructions() string {
+	emotions := make([]string, len(expression.Emotions))
+	for i, emotion := range expression.Emotions {
+		emotions[i] = string(emotion)
+	}
+	activities := make([]string, len(expression.Activities))
+	for i, activity := range expression.Activities {
+		activities[i] = string(activity)
+	}
+	return "Respond as BMO with exactly one JSON object and no Markdown or other text. " +
+		"The object must contain exactly these fields: " +
+		`{"message":"words to speak","emotion":"one allowed emotion","activity":"one allowed activity"}. ` +
+		"Allowed emotions: " + strings.Join(emotions, ", ") + ". " +
+		"Allowed activities: " + strings.Join(activities, ", ") + "."
+}
+
+func stripJSONFence(text string) string {
+	if !strings.HasPrefix(text, "```") {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) < 3 || strings.TrimSpace(lines[len(lines)-1]) != "```" {
+		return text
+	}
+	return strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
+}
+
+func isMissingRequiredToolCall(err error) bool {
+	var httpErr *openClawHTTPError
+	return errors.As(err, &httpErr) &&
+		httpErr.Status == http.StatusBadGateway &&
+		strings.Contains(strings.ToLower(httpErr.Message), "required") &&
+		strings.Contains(strings.ToLower(httpErr.Message), "tool") &&
+		strings.Contains(strings.ToLower(httpErr.Message), "did not produce")
+}
+
+type openClawHTTPError struct {
+	Status  int
+	Type    string
+	Message string
+}
+
+func (e *openClawHTTPError) Error() string {
+	if e.Type != "" {
+		return fmt.Sprintf("OpenClaw returned HTTP %d (%s): %s", e.Status, e.Type, e.Message)
+	}
+	if e.Message != "" {
+		return fmt.Sprintf("OpenClaw returned HTTP %d: %s", e.Status, e.Message)
+	}
+	return fmt.Sprintf("OpenClaw returned HTTP %d", e.Status)
+}
+
 func decodeOpenClawError(status int, data []byte) error {
 	var response struct {
 		Error struct {
@@ -182,10 +318,11 @@ func decodeOpenClawError(status int, data []byte) error {
 		if len(message) > 300 {
 			message = message[:300]
 		}
-		if response.Error.Type != "" {
-			return fmt.Errorf("OpenClaw returned HTTP %d (%s): %s", status, response.Error.Type, message)
+		return &openClawHTTPError{
+			Status:  status,
+			Type:    response.Error.Type,
+			Message: message,
 		}
-		return fmt.Errorf("OpenClaw returned HTTP %d: %s", status, message)
 	}
-	return fmt.Errorf("OpenClaw returned HTTP %d", status)
+	return &openClawHTTPError{Status: status}
 }

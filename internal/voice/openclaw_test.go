@@ -81,6 +81,115 @@ func TestOpenClawClientRejectsHTTPError(t *testing.T) {
 	}
 }
 
+func TestOpenClawClientFallsBackToStrictJSONWhenToolCallIsMissing(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		switch requests {
+		case 1:
+			if _, ok := request["tool_choice"]; !ok {
+				t.Error("primary request did not pin deliver_response")
+			}
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{
+				"error":{
+					"type":"api_error",
+					"message":"tool_choice required a deliver_response tool call, but the agent did not produce one"
+				}
+			}`))
+		case 2:
+			if _, ok := request["tools"]; ok {
+				t.Error("fallback request unexpectedly included tools")
+			}
+			if _, ok := request["tool_choice"]; ok {
+				t.Error("fallback request unexpectedly included tool_choice")
+			}
+			instructions, _ := request["instructions"].(string)
+			if !strings.Contains(instructions, "exactly one JSON object") {
+				t.Errorf("fallback instructions = %q", instructions)
+			}
+			_, _ = w.Write([]byte(`{
+				"output":[{
+					"type":"message",
+					"content":[{
+						"type":"output_text",
+						"text":"{\"message\":\"Hi there!\",\"emotion\":\"happy\",\"activity\":\"neutral\"}"
+					}]
+				}]
+			}`))
+		default:
+			t.Errorf("unexpected request %d", requests)
+		}
+	}))
+	defer server.Close()
+
+	client := &OpenClawClient{
+		URL: server.URL, Model: "openclaw/default", User: "bmo-rpi",
+		Token: "secret", Timeout: time.Second,
+	}
+	reply, err := client.Respond(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	want := expression.ReplyEnvelope{
+		Message: "Hi there!", Emotion: expression.EmotionHappy, Activity: expression.ActivityNeutral,
+	}
+	if reply != want {
+		t.Fatalf("got %+v, want %+v", reply, want)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestOpenClawClientDoesNotFallbackForOtherHTTPFailures(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"type":"api_error","message":"upstream unavailable"}}`))
+	}))
+	defer server.Close()
+
+	client := &OpenClawClient{URL: server.URL, Token: "secret", Timeout: time.Second}
+	_, err := client.Respond(context.Background(), "hello")
+	if err == nil || !strings.Contains(err.Error(), "upstream unavailable") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
+func TestDecodeOutputTextAcceptsFencedJSONButStillValidatesSchema(t *testing.T) {
+	response, err := json.Marshal(map[string]string{
+		"output_text": "```json\n" +
+			`{"message":"Hello","emotion":"happy","activity":"talking"}` +
+			"\n```",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := decodeOutputText(response)
+	if err != nil {
+		t.Fatalf("decodeOutputText: %v", err)
+	}
+	if reply.Message != "Hello" || reply.Emotion != expression.EmotionHappy {
+		t.Fatalf("unexpected reply: %+v", reply)
+	}
+
+	_, err = decodeOutputText([]byte(`{
+		"output_text":"{\"message\":\"Hello\",\"emotion\":\"invalid\",\"activity\":\"talking\"}"
+	}`))
+	if err == nil {
+		t.Fatal("expected invalid fallback enum to fail")
+	}
+}
+
 func TestDecodeFunctionCallRejectsMalformedReplies(t *testing.T) {
 	tests := []string{
 		`{"output":[]}`,
