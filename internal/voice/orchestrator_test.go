@@ -76,8 +76,12 @@ func TestOrchestratorCompleteTurnStateProgression(t *testing.T) {
 		TempDir:        t.TempDir(),
 		currentEmotion: expression.EmotionNeutral,
 	}
-	if err := orchestrator.runTurn(context.Background()); err != nil {
+	responded, err := orchestrator.runTurn(context.Background())
+	if err != nil {
 		t.Fatalf("runTurn: %v", err)
+	}
+	if !responded {
+		t.Fatal("runTurn did not report a response")
 	}
 	want := []expression.FaceState{
 		{Emotion: expression.EmotionNeutral, Activity: expression.ActivityListening},
@@ -116,13 +120,214 @@ func TestOrchestratorDoesNotAnimateSpeakingBeforePlaybackStarts(t *testing.T) {
 		TempDir:        t.TempDir(),
 		currentEmotion: expression.EmotionNeutral,
 	}
-	if err := orchestrator.runTurn(context.Background()); err == nil {
+	if _, err := orchestrator.runTurn(context.Background()); err == nil {
 		t.Fatal("expected speaker preparation failure")
 	}
 	for _, state := range states.states {
 		if state.Speaking {
 			t.Fatalf("speaking activated before playback: %+v", states.states)
 		}
+	}
+}
+
+func TestOrchestratorWakeWordDisabledPreservesTranscript(t *testing.T) {
+	orchestrator := &Orchestrator{
+		Listener: listenerFunc(func(_ context.Context, onSpeech func()) ([]int16, error) {
+			onSpeech()
+			return []int16{1}, nil
+		}),
+		Transcriber: transcriberFunc(func(context.Context, string) (string, error) {
+			return "  BMO, how are you?  ", nil
+		}),
+		Responder: responderFunc(func(_ context.Context, text string) (expression.ReplyEnvelope, error) {
+			if text != "  BMO, how are you?  " {
+				t.Fatalf("transcript = %q", text)
+			}
+			return expression.ReplyEnvelope{
+				Message: "hi", Emotion: expression.EmotionHappy, Activity: expression.ActivityNeutral,
+			}, nil
+		}),
+		Speaker: speakerFunc(func(_ context.Context, _ string, onPlaybackStart func()) error {
+			onPlaybackStart()
+			return nil
+		}),
+		States:         &stateRecorder{},
+		Logger:         log.New(io.Discard, "", 0),
+		TempDir:        t.TempDir(),
+		currentEmotion: expression.EmotionNeutral,
+	}
+	responded, err := orchestrator.runTurn(context.Background())
+	if err != nil {
+		t.Fatalf("runTurn: %v", err)
+	}
+	if !responded {
+		t.Fatal("runTurn did not report a response")
+	}
+}
+
+func TestOrchestratorWakeWordIgnoresUnaddressedSpeech(t *testing.T) {
+	states := &stateRecorder{}
+	orchestrator := &Orchestrator{
+		WakeWord: true,
+		Listener: listenerFunc(func(_ context.Context, onSpeech func()) ([]int16, error) {
+			onSpeech()
+			return []int16{1}, nil
+		}),
+		Transcriber: transcriberFunc(func(context.Context, string) (string, error) {
+			return "what time is it?", nil
+		}),
+		Responder: responderFunc(func(context.Context, string) (expression.ReplyEnvelope, error) {
+			t.Fatal("responder was called without wake word")
+			return expression.ReplyEnvelope{}, nil
+		}),
+		Speaker: speakerFunc(func(context.Context, string, func()) error {
+			t.Fatal("speaker was called without wake word")
+			return nil
+		}),
+		States:         states,
+		Logger:         log.New(io.Discard, "", 0),
+		TempDir:        t.TempDir(),
+		currentEmotion: expression.EmotionNeutral,
+	}
+	responded, err := orchestrator.runTurn(context.Background())
+	if err != nil {
+		t.Fatalf("runTurn: %v", err)
+	}
+	if responded {
+		t.Fatal("runTurn reported a response for ignored speech")
+	}
+	want := []expression.FaceState{
+		{Emotion: expression.EmotionNeutral, Activity: expression.ActivityListening},
+		{Emotion: expression.EmotionNeutral, Activity: expression.ActivityThinking},
+		{Emotion: expression.EmotionNeutral, Activity: expression.ActivityNeutral},
+	}
+	if !slices.Equal(states.states, want) {
+		t.Fatalf("states = %+v, want %+v", states.states, want)
+	}
+}
+
+func TestOrchestratorWakeWordSameUtteranceCommand(t *testing.T) {
+	orchestrator := &Orchestrator{
+		WakeWord: true,
+		Listener: listenerFunc(func(_ context.Context, onSpeech func()) ([]int16, error) {
+			onSpeech()
+			return []int16{1}, nil
+		}),
+		Transcriber: transcriberFunc(func(context.Context, string) (string, error) {
+			return "BMO, how are you?", nil
+		}),
+		Responder: responderFunc(func(_ context.Context, text string) (expression.ReplyEnvelope, error) {
+			if text != "how are you?" {
+				t.Fatalf("command = %q", text)
+			}
+			return expression.ReplyEnvelope{
+				Message: "hi", Emotion: expression.EmotionHappy, Activity: expression.ActivityNeutral,
+			}, nil
+		}),
+		Speaker: speakerFunc(func(_ context.Context, _ string, onPlaybackStart func()) error {
+			onPlaybackStart()
+			return nil
+		}),
+		States:         &stateRecorder{},
+		Logger:         log.New(io.Discard, "", 0),
+		TempDir:        t.TempDir(),
+		currentEmotion: expression.EmotionNeutral,
+	}
+	responded, err := orchestrator.runTurn(context.Background())
+	if err != nil {
+		t.Fatalf("runTurn: %v", err)
+	}
+	if !responded {
+		t.Fatal("runTurn did not report a response")
+	}
+}
+
+func TestOrchestratorWakeWordTwoStepCommand(t *testing.T) {
+	transcripts := []string{"BMO", "what time is it?"}
+	var commands []string
+	orchestrator := &Orchestrator{
+		WakeWord: true,
+		Listener: listenerFunc(func(_ context.Context, onSpeech func()) ([]int16, error) {
+			onSpeech()
+			return []int16{1}, nil
+		}),
+		Transcriber: transcriberFunc(func(context.Context, string) (string, error) {
+			transcript := transcripts[0]
+			transcripts = transcripts[1:]
+			return transcript, nil
+		}),
+		Responder: responderFunc(func(_ context.Context, text string) (expression.ReplyEnvelope, error) {
+			commands = append(commands, text)
+			return expression.ReplyEnvelope{
+				Message: "hi", Emotion: expression.EmotionHappy, Activity: expression.ActivityNeutral,
+			}, nil
+		}),
+		Speaker: speakerFunc(func(_ context.Context, _ string, onPlaybackStart func()) error {
+			onPlaybackStart()
+			return nil
+		}),
+		States:         &stateRecorder{},
+		Logger:         log.New(io.Discard, "", 0),
+		TempDir:        t.TempDir(),
+		currentEmotion: expression.EmotionNeutral,
+	}
+	responded, err := orchestrator.runTurn(context.Background())
+	if err != nil {
+		t.Fatalf("first runTurn: %v", err)
+	}
+	if responded {
+		t.Fatal("wake-only turn reported a response")
+	}
+	responded, err = orchestrator.runTurn(context.Background())
+	if err != nil {
+		t.Fatalf("second runTurn: %v", err)
+	}
+	if !responded {
+		t.Fatal("command turn did not report a response")
+	}
+	if !slices.Equal(commands, []string{"what time is it?"}) {
+		t.Fatalf("commands = %q", commands)
+	}
+}
+
+func TestOrchestratorWakeWordNoCooldownForIgnoredSpeech(t *testing.T) {
+	var ignoredFinished time.Time
+	var secondListen time.Time
+	calls := 0
+	orchestrator := &Orchestrator{
+		WakeWord: true,
+		Listener: listenerFunc(func(_ context.Context, onSpeech func()) ([]int16, error) {
+			calls++
+			if calls == 1 {
+				onSpeech()
+				return []int16{1}, nil
+			}
+			secondListen = time.Now()
+			return nil, io.EOF
+		}),
+		Transcriber: transcriberFunc(func(context.Context, string) (string, error) {
+			ignoredFinished = time.Now()
+			return "not talking to the robot", nil
+		}),
+		Responder: responderFunc(func(context.Context, string) (expression.ReplyEnvelope, error) {
+			t.Fatal("responder was called for ignored speech")
+			return expression.ReplyEnvelope{}, nil
+		}),
+		Speaker: speakerFunc(func(context.Context, string, func()) error {
+			t.Fatal("speaker was called for ignored speech")
+			return nil
+		}),
+		States:       &stateRecorder{},
+		Logger:       log.New(io.Discard, "", 0),
+		TempDir:      t.TempDir(),
+		Cooldown:     500 * time.Millisecond,
+		FailureDelay: 0,
+	}
+	if err := orchestrator.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if elapsed := secondListen.Sub(ignoredFinished); elapsed >= orchestrator.Cooldown/2 {
+		t.Fatalf("second capture started after %v; ignored speech should not wait for cooldown %v", elapsed, orchestrator.Cooldown)
 	}
 }
 

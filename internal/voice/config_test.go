@@ -45,6 +45,21 @@ func TestNewOrchestratorUsesConfiguredVADSensitivity(t *testing.T) {
 	}
 }
 
+func TestNewOrchestratorUsesConfiguredWakeWordMode(t *testing.T) {
+	cfg := Config{
+		VADMinimumSpeechRMS: 40,
+		VADNoiseMultiplier:  1.5,
+		WakeWordEnabled:     true,
+	}
+	orchestrator, _, _, err := NewOrchestrator(cfg, expression.NewFaceStateInbox(), nil)
+	if err != nil {
+		t.Fatalf("NewOrchestrator: %v", err)
+	}
+	if !orchestrator.WakeWord {
+		t.Fatal("wake-word mode was not enabled")
+	}
+}
+
 func TestNewVADRejectsNonFiniteSensitivity(t *testing.T) {
 	config := DefaultVADConfig()
 	config.MinimumSpeechRMS = math.NaN()

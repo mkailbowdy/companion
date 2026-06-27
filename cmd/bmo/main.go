@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -22,6 +23,9 @@ func main() {
 }
 
 func run() error {
+	wakeWord := flag.Bool("wake-word", false, "only respond after hearing BMO")
+	flag.Parse()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -29,6 +33,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	cfg.WakeWordEnabled = *wakeWord
 
 	inbox := expression.NewFaceStateInbox()
 	conversation, client, speaker, err := voice.NewOrchestrator(cfg, inbox, log.Default())

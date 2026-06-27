@@ -72,6 +72,12 @@ For desktop development:
 BMO_WINDOWED=1 go run ./cmd/bmo
 ```
 
+To require the wake word before BMO responds:
+
+```sh
+go run ./cmd/bmo --wake-word
+```
+
 Press Left/Right to cycle emotions, Up/Down to cycle activities, and Space to
 return to neutral.
 
@@ -87,6 +93,11 @@ For unusually quiet microphones, lower `BMO_VAD_MIN_RMS`. For a microphone
 peaking near `-40 dBFS`, start with `40`. Lower
 `BMO_VAD_NOISE_MULTIPLIER` toward `1.5` if speech remains too close to the
 ambient noise floor; increase either value if ambient noise triggers BMO.
+
+With `--wake-word`, BMO ignores transcripts until it hears "BMO" at the start
+of an utterance. Whisper spellings such as "B.M.O.", "Beemo", and "Bee Mo" are
+accepted. "BMO, what time is it?" is handled in one turn; saying only "BMO"
+arms the next utterance as the command.
 
 OpenClaw is required to call the pinned `deliver_response` function with a
 spoken `message`, an enum-validated `emotion`, and an enum-validated

@@ -32,6 +32,7 @@ type Config struct {
 
 	VADMinimumSpeechRMS float64
 	VADNoiseMultiplier  float64
+	WakeWordEnabled     bool
 
 	StartupTimeout    time.Duration
 	WhisperTimeout    time.Duration

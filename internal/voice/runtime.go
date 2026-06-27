@@ -54,6 +54,7 @@ func NewOrchestrator(cfg Config, states *expression.FaceStateInbox, logger *log.
 		TempDir:      cfg.TempDir,
 		Cooldown:     cfg.PlaybackCooldown,
 		FailureDelay: cfg.FailureStateDelay,
+		WakeWord:     cfg.WakeWordEnabled,
 	}
 	return orchestrator, client, speaker, nil
 }
